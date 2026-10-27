@@ -51,6 +51,9 @@ configured name with no entry). With no `export` spec the menu falls back to
 There is no Reflex-side export API. `python/reflex_xy/` renders without a kernel in
 the browser; export runs on the composed chart object in Python.
 
+All path writers, including HTML/SVG and facet exports, use the atomic-write
+and permission contract in [§8](#8-batch-export).
+
 ## 2. Formats and backends
 
 `IMAGE_FORMATS = ("png", "jpeg", "webp", "svg", "pdf")`, with `jpg` aliased to
@@ -232,7 +235,13 @@ reader never observes a partial image. The temp file stays owner-only while it
 is written; just before the replace it takes the mode a plain `open(path, "w")`
 would leave (an existing file's permission bits, or for a new file `0o666`
 filtered by the umask or the directory's default ACL), so exports are not left
-owner-only. Failure mid-batch is not transactional: files already written stay
+owner-only. POSIX replacements preserve the existing group before enabling its
+permission bits; on Linux they also retain the existing access ACL instead of
+gaining the directory's inherited named-user/group entries. If determining or
+applying the group, ACL, or mode fails, the export is still published with its
+private temporary-file permissions. Special setuid/setgid/sticky bits are not
+restored. Windows retains the previous atomic-write behavior without applying
+POSIX modes. Failure mid-batch is not transactional: files already written stay
 on disk. The return value is the list of written byte strings, in input order.
 ## 9. What styling survives which export path
 

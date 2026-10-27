@@ -4,6 +4,7 @@ buffers in one self-contained file — interactive with no kernel attached."""
 from __future__ import annotations
 
 import base64
+import errno
 import html as _html
 import json
 import math
@@ -218,19 +219,8 @@ _DECODE_B64_JS = (
 )
 
 
-def _open_file_mode(target: Path) -> int:
-    """The permission bits `open(target, "w")` would leave on `target`.
-
-    An existing file keeps its own bits (`open` never changes them; the kernel
-    clears setuid/setgid on write, hence the `0o777` mask). A new file gets
-    `0o666` filtered by whatever governs creation in that directory — the
-    umask, or a default ACL — which is read back from an empty probe file
-    rather than by flipping the process-wide umask.
-    """
-    try:
-        return stat.S_IMODE(os.stat(target).st_mode) & 0o777
-    except OSError:
-        pass
+def _new_file_mode(target: Path) -> int:
+    """Read new-file permissions without changing the process-wide umask."""
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     for _ in range(tempfile.TMP_MAX):
         probe = target.parent / f".{target.name}.{secrets.token_hex(4)}.mode"
@@ -247,6 +237,25 @@ def _open_file_mode(target: Path) -> int:
     raise FileExistsError(f"no free temporary file name beside {str(target)!r}")
 
 
+def _preserve_access_acl(fd: int, target: Path) -> None:
+    """Keep a Linux replacement from gaining the directory's inherited ACL."""
+    if not sys.platform.startswith("linux"):
+        return
+    attribute = "system.posix_acl_access"
+    try:
+        acl = os.getxattr(target, attribute)
+    except OSError as error:
+        if error.errno != errno.ENODATA:
+            raise
+        try:
+            os.removexattr(fd, attribute)
+        except OSError as error:
+            if error.errno != errno.ENODATA:
+                raise
+    else:
+        os.setxattr(fd, attribute, acl)
+
+
 def _publish_mode(fd: int, target: Path) -> None:
     """Give the finished temp file the mode `open()` would have given the export.
 
@@ -255,13 +264,24 @@ def _publish_mode(fd: int, target: Path) -> None:
     every export ended up owner-only. The final mode is applied through the
     descriptor, after the data is flushed and immediately before the replace.
     Best effort: if the mode cannot be determined or applied (no free inode for
-    the probe, a filesystem without chmod), the finished export is still
-    published, just owner-only as before.
+    the probe, a filesystem without chmod, or an unpreservable group/ACL),
+    the export is still published, just owner-only as before.
     """
-    if not hasattr(os, "fchmod"):  # POSIX; Windows has no owner-only mode to undo
+    if os.name != "posix":  # Windows fchmod changes the read-only attribute.
         return
     with suppress(OSError):
-        os.fchmod(fd, _open_file_mode(target))
+        try:
+            original = target.stat()
+        except FileNotFoundError:
+            mode = _new_file_mode(target)
+        else:
+            # Preserve the access principals before enabling their bits. A
+            # failed group/ACL operation leaves the mkstemp file private.
+            if os.fstat(fd).st_gid != original.st_gid:
+                os.fchown(fd, -1, original.st_gid)
+            _preserve_access_acl(fd, target)
+            mode = stat.S_IMODE(original.st_mode) & 0o777
+        os.fchmod(fd, mode)
 
 
 def _atomic_write_bytes(path: str | PathLike[str], data: bytes) -> None:

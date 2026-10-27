@@ -237,7 +237,9 @@ would leave (an existing file's permission bits, or for a new file `0o666`
 filtered by the umask or the directory's default ACL), so exports are not left
 owner-only. POSIX replacements preserve the existing group before enabling its
 permission bits; on Linux they also retain the existing access ACL instead of
-gaining the directory's inherited named-user/group entries. If determining or
+gaining the directory's inherited named-user/group entries. Missing ACLs and
+unsupported ACL operations (`ENODATA`, `ENOTSUP`/`EOPNOTSUPP`) count as no ACL;
+these filesystems still receive their ordinary permission bits. If determining or
 applying the group, ACL, or mode fails, the export is still published with its
 private temporary-file permissions. Special setuid/setgid/sticky bits are not
 restored. Windows retains the previous atomic-write behavior without applying

@@ -112,3 +112,39 @@ def test_unreadable_existing_acl_leaves_export_private(tmp_path, monkeypatch):
     assert target.read_text() == "new"
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux POSIX ACL xattrs")
+@pytest.mark.parametrize("writer", ["bytes", "text"])
+@pytest.mark.parametrize(
+    "read_error, remove_error, expected_mode",
+    [
+        (errno.ENOTSUP, errno.ENOTSUP, 0o640),
+        (errno.EOPNOTSUPP, errno.EOPNOTSUPP, 0o640),
+        (errno.ENODATA, errno.ENOTSUP, 0o640),
+        (errno.ENOTSUP, errno.ENODATA, 0o640),
+        (errno.ENOTSUP, errno.EPERM, 0o600),
+    ],
+)
+def test_unsupported_acl_keeps_mode_but_denied_acl_stays_private(
+    tmp_path, monkeypatch, writer, read_error, remove_error, expected_mode
+):
+    target = tmp_path / "chart.html"
+    target.write_text("old")
+    target.chmod(0o640)
+
+    def no_acl(*args):
+        raise OSError(read_error, "cannot read access ACL")
+
+    def no_acl_removal(*args):
+        raise OSError(remove_error, "cannot remove access ACL")
+
+    monkeypatch.setattr(export_module.os, "getxattr", no_acl)
+    monkeypatch.setattr(export_module.os, "removexattr", no_acl_removal)
+    if writer == "bytes":
+        export_module._atomic_write_bytes(target, b"new")
+    else:
+        export_module._atomic_write_text(target, "new")
+    assert target.read_bytes() == b"new"
+    assert stat.S_IMODE(target.stat().st_mode) == expected_mode
+    assert not list(tmp_path.glob(".*.tmp"))

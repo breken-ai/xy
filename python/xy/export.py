@@ -242,15 +242,16 @@ def _preserve_access_acl(fd: int, target: Path) -> None:
     if not sys.platform.startswith("linux"):
         return
     attribute = "system.posix_acl_access"
+    absent_acl_errors = (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP)
     try:
         acl = os.getxattr(target, attribute)
     except OSError as error:
-        if error.errno != errno.ENODATA:
+        if error.errno not in absent_acl_errors:
             raise
         try:
             os.removexattr(fd, attribute)
         except OSError as error:
-            if error.errno != errno.ENODATA:
+            if error.errno not in absent_acl_errors:
                 raise
     else:
         os.setxattr(fd, attribute, acl)

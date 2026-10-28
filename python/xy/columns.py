@@ -100,7 +100,8 @@ class ZoneMaps:
 # row count no longer matches, so a stale/edited column is never trusted.
 # Version 2 names the sidecar by the column's byte offset in its file (see
 # `_zone_cache_path`). A version-1 sidecar may hold another column's maps, so
-# the magic changed with the name and old files are never read.
+# the magic changed with the name and old files are never read. A successful
+# write of the replacement removes the legacy sidecar, best effort.
 _ZONE_CACHE_MAGIC = b"XYZONEC2"
 _ZONE_CACHE_SUFFIX = ".xyzones"
 # 6 f64 planes + 2 u64 planes per chunk (mirrors ZoneMaps' fields, in order).
@@ -192,6 +193,12 @@ def _store_zone_cache(arr: Any, zm: ZoneMaps) -> None:
             for name in _ZONE_U64_FIELDS:
                 np.ascontiguousarray(getattr(zm, name), dtype=np.uint64).tofile(f)
         _os.replace(tmp, path)  # atomic: a concurrent reader sees whole-or-nothing
+        # This name can also be another source column's v2 sidecar.
+        legacy = source + _ZONE_CACHE_SUFFIX
+        with open(legacy, "rb") as f:
+            legacy_magic = f.read(8)
+        if legacy_magic == b"XYZONEC1":
+            _os.unlink(legacy)
     except OSError:
         return
 

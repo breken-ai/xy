@@ -15,6 +15,7 @@ bounded by the *screen*, not the data:
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 import xy
 from xy._ooc import MemmapF64Builder, is_memmapped, open_f64
@@ -234,3 +235,52 @@ def test_backing_offset_without_file_metadata_is_not_disk_backed():
     orphan = np.arange(4, dtype=np.float64).view(np.memmap)
     assert backing_offset(orphan) is None
     assert backing_offset(np.arange(4, dtype=np.float64)) is None
+
+
+@pytest.mark.parametrize("offset", [0, 8])
+def test_zone_map_cache_removes_legacy_sidecar(tmp_path, offset):
+    from xy import columns
+
+    path = tmp_path / "legacy.f64"
+    np.arange(5, dtype=np.float64).tofile(path)
+    col = np.memmap(path, dtype=np.float64, mode="r", offset=offset)
+    legacy = tmp_path / "legacy.f64.xyzones"
+    legacy.write_bytes(b"XYZONEC1" + b"obsolete maps")
+
+    columns._zone_maps_for(col)
+
+    assert not legacy.exists()
+    assert columns._load_zone_cache(col).min == float(offset // 8)
+
+
+def test_zone_map_cache_legacy_cleanup_is_best_effort(tmp_path, monkeypatch):
+    from xy import columns
+
+    col = _build(tmp_path, "legacy.f64", np.arange(5, dtype=np.float64))
+    legacy = tmp_path / "legacy.f64.xyzones"
+    legacy.write_bytes(b"XYZONEC1" + b"obsolete maps")
+
+    def denied(path):
+        assert path == str(legacy)
+        raise PermissionError("legacy sidecar cannot be removed")
+
+    monkeypatch.setattr(columns._os, "unlink", denied)
+    assert columns._zone_maps_for(col).max == 4.0
+    assert legacy.exists()
+    assert columns._load_zone_cache(col).max == 4.0
+
+
+def test_zone_map_cache_failed_write_keeps_legacy_sidecar(tmp_path, monkeypatch):
+    from xy import columns
+
+    col = _build(tmp_path, "legacy.f64", np.arange(5, dtype=np.float64))
+    legacy = tmp_path / "legacy.f64.xyzones"
+    legacy.write_bytes(b"XYZONEC1" + b"obsolete maps")
+
+    def denied(source, target):
+        raise PermissionError("new sidecar cannot be installed")
+
+    monkeypatch.setattr(columns._os, "replace", denied)
+    assert columns._zone_maps_for(col).max == 4.0
+    assert legacy.exists()
+    assert columns._load_zone_cache(col) is None
